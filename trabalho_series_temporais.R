@@ -135,7 +135,8 @@ models_ts_br_seasonal |>
 
 consumo_ts_br_exo = consumo_ts_br |>
   mutate(pandemic = case_when(ano_mes > lubridate::ymd('2020-03-10') & ano_mes < lubridate::ymd('2021-12-31') ~ 1,
-                              .default = 0))
+                              .default = 0)) |>
+  mutate(pandemic = pandemic |> as.factor())
 
 
 arimax_model = consumo_ts_br_exo |>
@@ -144,6 +145,8 @@ arimax_model = consumo_ts_br_exo |>
 arimax_model |> 
   report() |>
   gg_tsresiduals()
+
+# A variável é significatica
 
 ######### Ajuste dos modelos
 

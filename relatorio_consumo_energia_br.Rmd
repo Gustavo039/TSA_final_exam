@@ -1,0 +1,257 @@
+---
+title: "Análise e Modelagem do Consumo de Energia Elétrica no Brasil"
+author: "Gustavo Almeida Silva - Pedro Henrique Corrêa de Almeida"
+format:
+  html:
+    theme: zephyr
+    toc: true
+    number-sections: true
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+
+library(readxl)
+library(tidyverse)
+library(fpp3)
+library(forecast)
+```
+
+# Introdução 
+
+A energia elétrica é um recurso fundamental para o progresso do Brasil. Desde sua chegada no final do século XIX, com a construção da primeira usina hidrelétrica em Niterói, o setor elétrico brasileiro se desenvolveu rapidamente. Hoje, o Brasil é o quarto maior produtor de energia elétrica na América Latina.
+
+Sua importância para a economia do país é indiscutível, sendo utilizada em diversos setores como indústria, comércio, agricultura e serviços, gerando emprego e renda. 
+
+Atualmente, o Brasil é o 7º maior consumidor de energia do mundo e o maior da América do Sul
+
+
+![](./figs/postes1.png){width=50%}
+
+
+O trabalho desenvolvido nesse documento tem como objetivo, analisar e modelar a série temporal de consumo de energia elétrica no Brasil, entre o período de Janeiro de 2004 a Setembro de 2023
+
+
+Os dados utilizados foram obtidos da organização [EPE - Empresa de Pesquisa Energética](https://www.epe.gov.br/pt/publicacoes-dados-abertos/publicacoes/consumo-de-energia-eletrica)
+
+Os dados ja limpos e organizados em um csv podem ser acessados via github: [Consumo_Brasil.csv](https://github.com/Gustavo039/TSA_final_exam/blob/main/consumo_eletrico_brasil.csv)
+
+# Análise Exploratória
+
+```{r, message=F, warning=F, eval = F, echo = F}
+
+anos = 2023:2004
+ranges = lapply(1:length(anos), 
+                function(i) c(6, 19)+16*(i-1))
+
+consumo = 
+  seq_along(ranges) |>
+  lapply(
+  function(i){
+    range = ranges[[i]]
+    print(range)
+    read_excel(
+      "CONSUMO MENSAL DE ENERGIA ELÉTRICA POR CLASSE.xlsx",
+      sheet = "TOTAL",
+      range = glue::glue("A{range[1]}:N{range[2]}")
+    ) |>
+    dplyr::mutate(ANO = anos[i])
+  }
+  ) |>
+  map(
+    ~.x |> slice(3:7)
+  ) |>
+  bind_rows() |>
+  rename(regiao = `...1`) |> 
+  pivot_longer(-c(ANO, regiao), values_to = "consumo", names_to = 'MES') |>
+  filter(consumo > 0)
+
+meses = 1:12
+
+names(meses) = 
+  unique(consumo$MES)
+
+consumo_ts = consumo |>
+  mutate(MES = meses[MES]) |>
+  mutate(ano_mes_dia = as.Date(glue::glue('{ANO}/{MES}/01'))) |>
+  tsibble::as_tsibble(index = ano_mes_dia, key = "regiao")
+
+consumo_ts_br =  consumo_ts |> 
+  summarise(consumo = sum(consumo))  
+
+consumo_ts_br |>
+ write.csv('D:/UFJF_materias/SeriesTemp/TSA_final_exam/consumo_eletrico_brasil.csv')
+```
+
+
+```{r}
+consumo_ts_br = readr::read_csv('consumo_eletrico_brasil.csv') |>
+  select(-"...1") |>
+  mutate(ano_mes = ano_mes_dia |> yearmonth(), .keep = 'unused') |>
+  relocate(ano_mes, .before = consumo) |>
+  tsibble::as_tsibble(index = ano_mes)
+```
+
+
+```{r}
+consumo_ts_br |>
+  rmarkdown::paged_table()
+```
+
+
+A série apresenta o seguinte comportamento 
+
+```{r}
+consumo_ts_br |>
+  autoplot() +
+  theme_minimal() +
+  labs(title = 'Consumo de Energia Elétrica no Brasil', x = 'Mês do Ano', y = 'Consumo em MWh')
+```
+
+
+
+
+
+```{r}
+fore = ts(consumo_ts_br$consumo, start = c(year(min(consumo_ts_br$ano_mes)), month(min(consumo_ts_br$ano_mes))), frequency = 12)
+
+ggseasonplot(fore, year.labels=FALSE, continuous=TRUE, polar = TRUE)
+```
+
+```{r}
+
+consumo_ts_br |>
+  model(
+    STL(consumo ~ trend(window = 6) +
+          season(window = "periodic"),
+        robust = TRUE)) |>
+  components() |>
+  autoplot()
+
+
+consumo_ts_br |>
+  model(x11 = X_13ARIMA_SEATS(consumo ~ x11())) |>
+  components() |>
+autoplot() 
+```
+
+# Modelagem
+
+Os seguintes passos foram seguidos:
+
+* Análise da FAC e FACP
+  + Utilzar os gráficos de Autocorrelação e Autocorrelação Parcial para investigar o melhor modelo para os dados, assim como os parâmetros desse modelo
+
+* Análise de Variância da Série
+  + Visualizar se a série possui variância heterocedástica, onde se necessário, uma transformação deve ser aplicada
+
+* Estimação dos Modelos Não Sazonais
+  + Procura dos melhores parâmetros dos modelos que não possuem uma parcela sazonal
+
+* Estimação dos Modelos Sazonais
+  + Procura dos melhores parâmetros dos modelos que possuem uma parcela sazonal
+  
+* Escolha do Melhor Modelo
+  + Comparação entre o melhor modelo não sazonal e sazonal, através de métricas como AICc e BIC e valores de acurácia como: REQM, MAE e MAPE calculados a partir de uma validação cruzada
+
+
+## FAC e FACP 
+
+Na etapa de análise exploratória vimos que a série trabalhada possui uma forte tendência de crescimento, além de apresentar uma sazonalidade anual
+
+Assim para a aplicação de que suponhem estacionariedade, esperamos que seja necessário pelo menos 1 diferenciação
+
+A série apresentou o seguinte comportamento da FAC e FACP:
+
+```{r}
+consumo_ts_br |>
+  gg_tsdisplay((consumo), plot_type = "partial")
+```
+
+
+Obervando a FAC, vemos um decaimento extremamente lento dos valores de autocorrelações, indicando que a série trabalhada é não estacionária
+
+O teste de **Dickler Fuller Aumentado** com as seguintes hipóteses foi aplicado:
+
+$$H_0: \text{Série é não estacionária}$$
+
+$$H_1: \text{Série é estacionária}$$
+
+```{r}
+consumo_ts_br$consumo |>
+  tseries::adf.test(k=12)
+```
+
+Assim como era esperado, o teste não rejeitou a hipótese de não estacionariedade da série e portanto uma diferenciação foi aplicada nos dados
+
+
+A série diferenciada apresentou o seguinte comportamento
+
+```{r}
+consumo_ts_br |>
+  gg_tsdisplay(difference(consumo), plot_type = "partial")
+
+```
+
+
+```{r}
+AgrupS<-function(Z,S) {
+  M<-rep(0,S)
+  Sd<-rep(0,S)
+  N<-length(Z)
+  G<-rep(1:S,ceiling(N/S))
+  G<-G[1:N]
+  for (k in 1:S) {
+  	M[k]<-mean(Z[G==k])
+  	S[k]<-sd(Z[G==k])
+  }
+  plot(M,S,xlab="média",ylab="desvio padrão",pch=16)
+}
+
+consumo_ts_br$consumo |>
+  diff() |>
+  AgrupS(12)
+
+Agrup<-function(Z,M) {
+	N<-length(Z)
+	K<-floor(N/M)
+	Zw<-matrix(0,nrow=K,ncol=2)
+	for (k in 1:K) {
+		Zw[k,1]<-mean(Z[((k-1)*M+1):(k*M)])
+		Zw[k,2]<-sd(Z[((k-1)*M+1):(k*M)])
+	}
+	plot(Zw,xlab="média",ylab="desvio padrão",pch=16)
+}
+
+
+consumo_ts_br$consumo |>
+  diff() |>
+  Agrup(7)
+
+```
+
+## Modelos Não Sazonais
+
+O seguinte tópico teve como objetivo estimar modelos ARIMA, onde ao final dessa etapa, o melhor modelo não sazonal foi estimado
+
+O modelo deve ter o parametro de diferenciação igual a 1, dado que os dados trabalhados são não estacionários, onde aplicar 1 difeerenciação foi suficiente para alterar tal cenário. Assim, o modelo tem a seguinte estrutura:
+
+$$Seja \ y_t´ = y_t - y_{t-1}$$
+
+$$y_t´ = \phi_1 y´_{t-1} + \phi_2 y´_{t-2} + ... + \phi_p y´_{t-p} + \theta_1  \epsilon_{t-1} + \theta_2  \epsilon_{t-2} + ... + \theta_q  \epsilon_{t-q} +  \epsilon_t$$
+
+```{r}
+models_ts_br = consumo_ts_br |> 
+  model(arima_test = ARIMA(consumo ~ pdq(0:3, 1, 0:3) + PDQ(0,0,0), 
+                           trace = T,
+                           approximation = F,
+                           ic = 'bic'))
+
+models_ts_br |> report()
+```
+
+Vemos que o modelo ARIMA(2,1,2) foi o melhor nas 3 métricas: **AIC, BIC e AICc**
+
+# Interpretação e Previsão 
+ 
