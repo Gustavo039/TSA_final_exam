@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
 library(readxl)
 library(tidyverse)
 library(fpp3)
-library(forecast)
+library(lubridate)
 ```
 
 # Introdução 
@@ -106,50 +106,61 @@ A série apresenta o seguinte comportamento
 consumo_ts_br |>
   autoplot() +
   theme_minimal() +
-  labs(title = 'Consumo de Energia Elétrica no Brasil', x = 'Mês do Ano', y = 'Consumo em MWh')
+  labs(title = 'Consumo de Energia Elétrica no Brasil', x = 'Data', y = 'Consumo em MWh')
 ```
 
 
+Vemos que se trata de uma série com uma forte tendência de crescimento. Além disso, é possível observar a presença de uma sazonalidade.
 
+Também vemos grandes quedas no uso de energia nos anos de 2009 e 2020
 
+A queda em 2009 pode ser explicada pela forte crise econômica mundial de 2008, como noticiado em [G1 - Queda do uso de energia 2009](https://g1.globo.com/Noticias/Economia_Negocios/0,,MUL1461892-9356,00-CONSUMO+DE+ENERGIA+NO+BRASIL+RECUA+EM+DIZ+EPE.html): "Como ressaltado ao longo do ano, o mercado brasileiro de energia elétrica sofreu forte impacto da crise financeira internacional, porém seus efeitos se concentraram na classe industrial, como consequência da imediata e profunda retração da atividade deste segmento"
+
+Já a queda em 2020 está fortemente ligada a pandemia de Covid-19, onde os setores industriais apresentaram forte queda nos primeiros meses do 'lockdown', como noticiado em [Energe - Queda do uso de energia 2020](https://energes.com.br/consumo-de-energia-no-brasil/) "Ao analisar o desempenho do consumo de energia por ramo de atividade, é possível notar que a indústria automotiva e o segmento têxtil ainda lideram as maiores quedas no mercado livre.
+O setor de veículos apresentou, no início da pandemia (mês de abril) recuo de 65,6% no consumo de energia.  Já a área têxtil registrou retração de 46,3% também no mesmo período."
 
 ```{r}
-fore = ts(consumo_ts_br$consumo, start = c(year(min(consumo_ts_br$ano_mes)), month(min(consumo_ts_br$ano_mes))), frequency = 12)
-
-ggseasonplot(fore, year.labels=FALSE, continuous=TRUE, polar = TRUE)
+# fore = ts(consumo_ts_br$consumo, start = c(year(min(consumo_ts_br$ano_mes)), month(min(consumo_ts_br$ano_mes))), frequency = 12)
+# 
+# ggseasonplot(fore, year.labels=FALSE, continuous=TRUE, polar = TRUE)
 ```
+
+
+Buscando melhor entender os dados trabalhados, principalmente sua sazonalidade, o método STL de decomposição de séries temporais foi utilizado
+
+O **Seasonal and Trend decomposition using Loess**(STL) busca decompor a série em 3 componentes: tendência, sazonalidade e parte aleatória
 
 ```{r}
 
 consumo_ts_br |>
   model(
-    STL(consumo ~ trend(window = 6) +
+    STL(consumo ~ trend() +
           season(window = "periodic"),
         robust = TRUE)) |>
   components() |>
-  autoplot()
+  autoplot() +
+  theme_minimal()
 
-
-consumo_ts_br |>
-  model(x11 = X_13ARIMA_SEATS(consumo ~ x11())) |>
-  components() |>
-autoplot() 
 ```
+
+A partir da decomposição da série vemos a forte presença de sazonalidade com ciclos anuais, indicando que os modelos com parcelas sazonais serão aqueles com melhor ajuste
+
+Além disso, a parcela aleatória discriminou fortemente a queda no uso de energia de 2020, fato esse que não foi visto para o ano de 2009. Isso indica que os dados do ano de 2020 podem ser mostrar como valores atípicos no etapa de modelagem
 
 # Modelagem
 
 Os seguintes passos foram seguidos:
 
 * Análise da FAC e FACP
-  + Utilzar os gráficos de Autocorrelação e Autocorrelação Parcial para investigar o melhor modelo para os dados, assim como os parâmetros desse modelo
+  + Utilizar os gráficos de Autocorrelação e Autocorrelação Parcial para investigar o melhor modelo para os dados, assim como os parâmetros desse modelo
 
 * Análise de Variância da Série
   + Visualizar se a série possui variância heterocedástica, onde se necessário, uma transformação deve ser aplicada
 
-* Estimação dos Modelos Não Sazonais
+* Estimação dos Modelos Não Sazonais e Análise de Resíduos
   + Procura dos melhores parâmetros dos modelos que não possuem uma parcela sazonal
 
-* Estimação dos Modelos Sazonais
+* Estimação dos Modelos Sazonais e Análise de Resíduos
   + Procura dos melhores parâmetros dos modelos que possuem uma parcela sazonal
   
 * Escolha do Melhor Modelo
@@ -194,64 +205,287 @@ consumo_ts_br |>
 
 ```
 
+A partir de uma diferenciação vemos que a tendência da série foi estabilizada
+
+Aplicando novamente o teste de **Dickler Fuller Aumentado**, o seguinte resultado foi obtido
 
 ```{r}
-AgrupS<-function(Z,S) {
-  M<-rep(0,S)
-  Sd<-rep(0,S)
-  N<-length(Z)
-  G<-rep(1:S,ceiling(N/S))
-  G<-G[1:N]
-  for (k in 1:S) {
-  	M[k]<-mean(Z[G==k])
-  	S[k]<-sd(Z[G==k])
-  }
-  plot(M,S,xlab="média",ylab="desvio padrão",pch=16)
-}
-
 consumo_ts_br$consumo |>
   diff() |>
-  AgrupS(12)
-
-Agrup<-function(Z,M) {
-	N<-length(Z)
-	K<-floor(N/M)
-	Zw<-matrix(0,nrow=K,ncol=2)
-	for (k in 1:K) {
-		Zw[k,1]<-mean(Z[((k-1)*M+1):(k*M)])
-		Zw[k,2]<-sd(Z[((k-1)*M+1):(k*M)])
-	}
-	plot(Zw,xlab="média",ylab="desvio padrão",pch=16)
-}
-
-
-consumo_ts_br$consumo |>
-  diff() |>
-  Agrup(7)
-
+  tseries::adf.test(k=12)
 ```
 
-## Modelos Não Sazonais
+Onde $H_0$ foi rejeitada e portanto é razoável assumir a sua estacionariedade
+
+## Análise da Variância dos Dados
+
+A série diferenciada apresentou o seguinte comportamento
+
+```{r}
+consumo_ts_br |>
+  autoplot(consumo |>
+             difference()) +
+  theme_minimal() +
+  labs(title = 'Consumo de Energia Elétrica no Brasil', x = 'Data', y = 'Consumo em MWh')
+```
+
+Observando a série, vemos que há um aumento da variância dos dados ao passar dos anos, sendo uma forte indicação de uma série heterocedástica
+
+Para ajustar tal problema, podemos utilizar as seguintes ferramentas:
+
+* Aplicação de uma transformação 
+  + Uma transformação Log ou Raiz Quadrada 
+
+* Modelagem da Variância
+  + Utilização de modelos que de média e variância, sendo o **ARCH**(Autoregressive Conditional Heteroskedasticity)o mais conhecido. 
+  
+A partir do gráfico acima, vemos que o aumento da variância segue um padrão, onde esse aumento ocorre ao longo dos anos, e portanto uma simples transformação Log ou Raiz Quadrada deve reverter tal quadro.
+
+Modelos ARCH possuem são robustos a comportamentos irregulares da variância ao passar do tempo e portanto possuem uma maior complexidade de implementação e interpretação. 
+
+Assim, a aplicação de uma transformação **Log** nos dados foi utilizada para a reverter o quadro de heterocedasticidade
+
+
+```{r}
+consumo_ts_br |>
+  autoplot(consumo |>
+             log() |>
+             difference()) +
+  theme_minimal() +
+  labs(title = 'Consumo de Energia Elétrica no Brasil', x = 'Data', y = 'Log do Consumo em MWh')
+```
+
+A FAC e FACP tiveram o seguinte desempenho após a aplicação da transformação
+
+```{r}
+consumo_ts_br |>
+  gg_tsdisplay(consumo |>
+                 log() |>
+                 difference() |>
+                 difference(12), plot_type = "partial")
+```
+
+## Modelos Não Sazonais 
 
 O seguinte tópico teve como objetivo estimar modelos ARIMA, onde ao final dessa etapa, o melhor modelo não sazonal foi estimado
 
-O modelo deve ter o parametro de diferenciação igual a 1, dado que os dados trabalhados são não estacionários, onde aplicar 1 difeerenciação foi suficiente para alterar tal cenário. Assim, o modelo tem a seguinte estrutura:
+O modelo deve ter o parametro de diferenciação igual a 1, dado que os dados trabalhados são não estacionários, onde aplicar 1 diferenciação foi suficiente para alterar tal cenário. Assim, o modelo tem a seguinte estrutura:
 
 $$Seja \ y_t´ = y_t - y_{t-1}$$
 
 $$y_t´ = \phi_1 y´_{t-1} + \phi_2 y´_{t-2} + ... + \phi_p y´_{t-p} + \theta_1  \epsilon_{t-1} + \theta_2  \epsilon_{t-2} + ... + \theta_q  \epsilon_{t-q} +  \epsilon_t$$
 
+Para a seleção do modelo, o parâmetro de diferenciação foi fixado igual a 1, e definiu-se um vetor de 1 a 3 para a procura dos melhores parâmetros autorrgressivos e de médias móveis
+
 ```{r}
-models_ts_br = consumo_ts_br |> 
-  model(arima_test = ARIMA(consumo ~ pdq(0:3, 1, 0:3) + PDQ(0,0,0), 
+
+consumo_ts_br  = consumo_ts_br |>
+  mutate(log_consumo = log(consumo))
+  
+
+models_arima_br = consumo_ts_br |> 
+  model(arima_test = ARIMA(log_consumo ~ pdq(0:3, 1, 0:3) + PDQ(0,0,0), 
                            trace = T,
                            approximation = F,
                            ic = 'bic'))
 
-models_ts_br |> report()
+models_arima_br |> report()
 ```
 
 Vemos que o modelo ARIMA(2,1,2) foi o melhor nas 3 métricas: **AIC, BIC e AICc**
 
+O modelo estimado apresentou o seguinte comportamento dos resíduos
+
+```{r}
+models_arima_br |>
+  gg_tsresiduals()
+```
+
+A partir do gráfico de FAC, podemos ver um pico de autocorrelação no lag 12, indicando a presença de forte sazonalidade na série assim como explicado na análise exploratória.
+
+Assim, como esperado, um modelo sazonal deve se ajustar melhor aos dados
+
+## Modelos Sazonais
+
+O seguinte tópico teve como objetivo estimar modelos SARIMA, onde ao final dessa etapa, o melhor modelo  sazonal foi estimado
+
+Ao longo da análise exploratória e da modelagem via modelos não sazonais, vimos que o lag 12 possui uma alta autocorrelação, indicando que tal ponto deve ser modelado a partir de uma parcela sazonal
+
+
+
+```{r}
+models_sarima_br = consumo_ts_br |> 
+  model(arima_test = ARIMA(log_consumo ~ pdq(0:3, 1, 0:3) + PDQ(0:3, 1, 0:3, 12), 
+                           trace = F,
+                           approximation = T,
+                           ic = 'bic'))
+
+models_sarima_br |> report()
+```
+
+
+```{r}
+models_sarima_br |>
+  gg_tsresiduals()
+
+models_sarima_br =  consumo_ts_br |> 
+  model(arima_test = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1, 12)))
+
+models_sarima_br |> augment()
+
+models_sarima_br |>
+  augment()  |>
+  features(.resid, ljung_box, lag = 12)
+```
+
+
+## Escolha do Melhor Modelo
+
+Nos últimos tópicos, ajustados 3 modelos distintos, sendo eles
+
+$$ARIMA(2,1,2). \text{Melhor: BIC, AIC e AICc}$$
+
+$$SARIMA(1,1,1)(0,1,1). \text{Melhor: BIC}$$
+
+$$SARIMA(1,1,1)(1,1,1). \text{Melhor: AIC e AICc}$$
+
+
+Para definirmos o melhor modelo, a capacidade de cada um foi avaliada a partir utilizando método de validação cruzada
+
+```{r}
+consumo_cv = consumo_ts_br |>
+  stretch_tsibble(.init = 50, .step = 1)
+
+models_cv = consumo_cv |>
+  model(arima_212 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(0,0,0)),
+        sarima_111_011 = ARIMA(log_consumo ~ pdq(1,1,1) + PDQ(0,1,1)),
+        sarima_111_111 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1)))
+
+models_forecast = models_cv |>
+  forecast(h = 1) 
+
+models_accuracy = c(models_forecast$.model |> unique())|>
+  map_df(\(x) 
+    models_forecast |>
+    filter(.model == x) |>
+      accuracy(consumo_ts_br)
+  ) 
+
+models_accuracy |>
+  select(.model, RMSE, MAE, MAPE) |>
+  rename(Modelo = .model, 
+         REQM = RMSE,
+         EMA = MAE,
+         EPMA = MAPE) |>
+  mutate_if(is.numeric, ~ round(., 3))
+  
+```
+
+```{r}
+models_accuracy |>
+  select(.model, RMSE, MAE, MAPE) |>
+  rename(Modelo = .model, 
+         REQM = RMSE,
+         EMA = MAE,
+         EPMA = MAPE) |>
+  mutate_if(is.numeric, ~ round(., 3)) |>
+  rmarkdown::paged_table()
+```
+
+
+
 # Interpretação e Previsão 
+
+
+O modelo final seleciondo é um $SARIMA(1,1,1)(0,1,1)_{[12]}$
+
+```{r}
+consumo_ts_br |>
+  model(sarima_212_111 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1))) |>
+  forecast(h =12) |>
+  autoplot(consumo_ts_br) +
+  theme_minimal()
+```
  
+ 
+# Extra - Modelo SARIMAX
+
+Ao longo do estudo, o ano de 2020 se mostrou como uma forte ponto atípico para os modelos
+
+```{r}
+consumo_ts_br = consumo_ts_br |>
+  mutate(pandemia = case_when(ano_mes > ymd('2020-03-10') |>
+                                yearmonth() & 
+                              ano_mes < ymd('2020-12-31') |>
+                                yearmonth()
+                              ~ 1, .default = 0
+                              )) |>
+  mutate(pandemia = pandemia |> as.factor())
+```
+
+```{r}
+sarimax = consumo_ts_br |>
+  model(sarimax = ARIMA(log_consumo ~ pandemia + pdq(2,1,1) + PDQ(1,0,0)))
+
+sarimax |> report()
+
+sarimax |> gg_tsresiduals()
+```
+
+ 
+```{r}
+doParallel::registerDoParallel()
+
+consumo_cv = consumo_ts_br |>
+  stretch_tsibble(.init = 30, .step = 1)
+
+models_cv = consumo_cv |>
+  model(sarima_212_111 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1,12)),
+        sarimax_212_100 = ARIMA(log_consumo ~ pandemia + pdq(2,1,2) + PDQ(1,0,0,12))
+  )
+
+
+new_data_arg =  consumo_cv |>
+  new_data(1) |>
+  mutate(pandemia = case_when(ano_mes > ymd('2020-03-11') |>
+                                yearmonth() & 
+                              ano_mes < ymd('2020-12-31') |>
+                                yearmonth()
+                              ~ 1, .default = 0
+                              )) |>
+  mutate(pandemia = pandemia |> as.factor())
+
+models_forecast = models_cv |>
+  forecast(h = 1, new_data = new_data_arg) 
+
+models_accuracy = c(models_forecast$.model |> unique())|>
+  map_df(\(x) 
+    models_forecast |>
+    filter(.model == x) |>
+      accuracy(consumo_ts_br)
+  ) 
+
+models_accuracy |>
+  select(.model, RMSE, MAE, MAPE) |>
+  rename(Modelo = .model, 
+         REQM = RMSE,
+         EMA = MAE,
+         EPMA = MAPE) |>
+  mutate_if(is.numeric, ~ round(., 3))
+
+doParallel::stopImplicitCluster()
+  
+```
+
+```{r}
+models_accuracy |>
+  select(.model, RMSE, MAE, MAPE) |>
+  rename(Modelo = .model, 
+         REQM = RMSE,
+         EMA = MAE,
+         EPMA = MAPE) |>
+  mutate_if(is.numeric, ~ round(., 3)) |>
+  rmarkdown::paged_table()
+``` 
+
+Ao avaliar as métricas de erro obtidas via validação cruzada, vemos que o modelo SARIMA em variáveis exógenas se saiu melhor
