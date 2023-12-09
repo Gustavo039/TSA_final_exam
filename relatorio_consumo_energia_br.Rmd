@@ -110,7 +110,7 @@ consumo_ts_br |>
 ```
 
 
-Vemos que se trata de uma série com uma forte tendência de crescimento. Além disso, é possível observar a presença de uma sazonalidade.
+Vemos que se trata de uma série com uma forte tendência de crescimento. Além disso, é possível observar a presença de ciclos, tais ciclos foram detalhadamente estudados ao longo do trabalho, onde um padrão temporal foi observado, se tratando portanto de uma sazonalidade
 
 Também vemos grandes quedas no uso de energia nos anos de 2009 e 2020
 
@@ -139,11 +139,13 @@ consumo_ts_br |>
         robust = TRUE)) |>
   components() |>
   autoplot() +
-  theme_minimal()
+  theme_minimal() +
+  labs(title = 'Decomposição via STL',
+       subtitle = 'Consumo = Tendência + Sazonalidade + Ruído')
 
 ```
 
-A partir da decomposição da série vemos a forte presença de sazonalidade com ciclos anuais, indicando que os modelos com parcelas sazonais serão aqueles com melhor ajuste
+A partir da decomposição da série vemos a forte presença de sazonalidade com ciclos anuais, indicando que os modelos com parcelas sazonais anuais serão aqueles com melhor ajuste
 
 Além disso, a parcela aleatória discriminou fortemente a queda no uso de energia de 2020, fato esse que não foi visto para o ano de 2009. Isso indica que os dados do ano de 2020 podem ser mostrar como valores atípicos no etapa de modelagem
 
@@ -237,11 +239,11 @@ Para ajustar tal problema, podemos utilizar as seguintes ferramentas:
   + Uma transformação Log ou Raiz Quadrada 
 
 * Modelagem da Variância
-  + Utilização de modelos que de média e variância, sendo o **ARCH**(Autoregressive Conditional Heteroskedasticity)o mais conhecido. 
+  + Utilização de modelos que de média e variância, sendo o **ARCH**(Autoregressive Conditional Heteroskedasticity) o mais conhecido. 
   
 A partir do gráfico acima, vemos que o aumento da variância segue um padrão, onde esse aumento ocorre ao longo dos anos, e portanto uma simples transformação Log ou Raiz Quadrada deve reverter tal quadro.
 
-Modelos ARCH possuem são robustos a comportamentos irregulares da variância ao passar do tempo e portanto possuem uma maior complexidade de implementação e interpretação. 
+Modelos ARCH são robustos a comportamentos irregulares da variância ao passar do tempo e portanto possuem uma maior complexidade de implementação e interpretação. 
 
 Assim, a aplicação de uma transformação **Log** nos dados foi utilizada para a reverter o quadro de heterocedasticidade
 
@@ -261,9 +263,21 @@ A FAC e FACP tiveram o seguinte desempenho após a aplicação da transformaçã
 consumo_ts_br |>
   gg_tsdisplay(consumo |>
                  log() |>
-                 difference() |>
-                 difference(12), plot_type = "partial")
+                 difference(), plot_type = "partial", lag_max = 50)
 ```
+
+Após aplicar a tranformação Log e diferenciar o dados, os comportamentos da FAC e FACP retornaram uma forte autocorrelação com o lag 12 meses, ou seja, a série possui uma sazonalidade anual
+
+
+```{r}
+consumo_ts_br |>
+  gg_tsdisplay(consumo |>
+                 log() |>
+                 difference() , plot_type = "partial")
+
+```
+
+
 
 ## Modelos Não Sazonais 
 
@@ -281,7 +295,11 @@ Para a seleção do modelo, o parâmetro de diferenciação foi fixado igual a 1
 
 consumo_ts_br  = consumo_ts_br |>
   mutate(log_consumo = log(consumo))
-  
+
+
+consumo_ts_br |>
+  model(rw = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1, 12))) |>
+  gg_tsresiduals()
 
 models_arima_br = consumo_ts_br |> 
   model(arima_test = ARIMA(log_consumo ~ pdq(0:3, 1, 0:3) + PDQ(0,0,0), 
@@ -307,20 +325,136 @@ Assim, como esperado, um modelo sazonal deve se ajustar melhor aos dados
 
 ## Modelos Sazonais
 
-O seguinte tópico teve como objetivo estimar modelos SARIMA, onde ao final dessa etapa, o melhor modelo  sazonal foi estimado
+```{r}
+MSaz<-function(Z,S,H=0) {
+#S: Quantidade de períodos
+M<-rep(0,S)
+N<-length(Z)
+G<-rep(1:S,ceiling(N/S))
+G<-G[1:N]
+for (k in 1:12) {
+M[k]<-mean(Z[G==k])
+}
+M2<-rep(0,N+H)
+for (k in 1:(N+H)) {
+	M2[k]<-M[(k-1)%%12+1]
+}
+M2
+}
 
-Ao longo da análise exploratória e da modelagem via modelos não sazonais, vimos que o lag 12 possui uma alta autocorrelação, indicando que tal ponto deve ser modelado a partir de uma parcela sazonal
+seasonal_determ_means = consumo_ts_br |>
+  mutate(
+    log_consumo = 
+      c(0, diff(log_consumo)
+        )
+    )|>
+  {\(x) x$log_consumo}() |>
+  MSaz(12) |>
+  unique()
+
+medias$media_mes |> unique()
+
+
+```
+
+
+```{r}
+medias = consumo_ts_br |>
+  mutate(mes = ano_mes |> 
+           lubridate::month()) |>
+  as_tibble() |>
+  select(-ano_mes) |>
+  mutate(
+    log_consumo_diff = 
+           c(0, diff(log_consumo))) |>
+  group_by(mes) |>
+  summarise(media_mes = log_consumo_diff |>
+              median())
+
+
+
+
+consumo_ts_br_teste = consumo_ts_br |>
+  mutate(mes = ano_mes |> lubridate::month()) |>
+  left_join(medias, by = 'mes') |>
+  mutate(log_consumo_diff_std = (log_consumo |>
+           difference()) - media_mes
+           )
+
+consumo_ts_br |>
+  gg_tsdisplay(log_consumo_diff_std, plot_type = 'partial', lag_max = 50)
+```
+
+
+```{r}
+consumo_ts_br |>
+  mutate(mes = ano_mes |> lubridate::month()) |>
+  ggplot(aes(x = mes, y = log_consumo |> difference(), color = as.factor(mes))) +
+  geom_boxplot() 
+
+```
+
 
 
 
 ```{r}
-models_sarima_br = consumo_ts_br |> 
-  model(arima_test = ARIMA(log_consumo ~ pdq(0:3, 1, 0:3) + PDQ(0:3, 1, 0:3, 12), 
-                           trace = F,
-                           approximation = T,
-                           ic = 'bic'))
+teste = consumo_ts_br |>
+  mutate(
+    log_consumo = 
+      c(0, diff(log_consumo)
+        )
+    ) |>
+  mutate(log_consumo - seasonal_determ_means) 
 
-models_sarima_br |> report()
+model_test = teste |>
+  model(arima_iii = ARIMA(log_consumo ~ pdq(0:3, 0, 0:3) + PDQ(0,0,0))) 
+
+
+model_test|>
+  forecast(h = 12) |> 
+  mutate(.mean = .mean + seasonal_determ_means[12]) |>
+  autoplot(teste)
+```
+
+
+O seguinte tópico teve como objetivo estimar modelos com parcela, onde ao final dessa etapa, o melhor modelo  sazonal foi estimado
+
+Ao longo da análise exploratória e da modelagem via modelos não sazonais, vimos que o lag 12 possui uma alta autocorrelação, indicando que tal ponto deve ser modelado a partir de uma parcela sazonal
+
+
+2 modelos forma utilizados:
+
+* Modelo de Sazonalidade Determinística
+  + O modelo calcula uma média para o período sazonal fixado e retira esse valor dos dados. Tal modelo é de simples estimação e interpretação, porém não se mostra robusto para modelar a magnitudade da sazonalidade de cada período
+  
+* ARIMA Sazonal
+  + O modelo tem a capacidade de estimar termos autorregressivos e de médias móveis para a parcela sazonal. Tal modelo possui uma estimação e interpretação mais complexa, porém se mostra robusto para modelar a magnitudade da sazonalidade de cada período
+
+
+### Modelo de Sazonalidade Determinística
+
+```{r}
+consumo_ts_br |>
+  mutate(log_consumo = c(0, diff(log_consumo)))|>
+  autoplot(log_consumo)
+
+seasonal_determ = function(data, season_index){
+  
+}
+```
+
+### ARIMA Sazonal
+
+
+```{r}
+models_sarima_br_teste = consumo_ts_br |> 
+  model(arima_test = ARIMA(log_consumo ~ pdq(0:2, 1, 0:2) + PDQ(0:2, 1, 0:2, 12), 
+                           trace = T,
+                           approximation = T,
+                           stepwise = F,
+                           ic = 'aicc'))
+
+models_sarima_br_teste |> report()
 ```
 
 
@@ -331,7 +465,8 @@ models_sarima_br |>
 models_sarima_br =  consumo_ts_br |> 
   model(arima_test = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1, 12)))
 
-models_sarima_br |> augment()
+models_sarima_br |> report()
+
 
 models_sarima_br |>
   augment()  |>
@@ -354,12 +489,11 @@ Para definirmos o melhor modelo, a capacidade de cada um foi avaliada a partir u
 
 ```{r}
 consumo_cv = consumo_ts_br |>
-  stretch_tsibble(.init = 50, .step = 1)
+  stretch_tsibble(.init = 50, .step = 5)
 
 models_cv = consumo_cv |>
-  model(arima_212 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(0,0,0)),
-        sarima_111_011 = ARIMA(log_consumo ~ pdq(1,1,1) + PDQ(0,1,1)),
-        sarima_111_111 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1)))
+  model(sarima_212_111 = ARIMA(log_consumo ~ pdq(2,1,2) + PDQ(1,1,1, 12)),
+        s_deter_arma = ARIMA(sazonal_diff_log_consumo))
 
 models_forecast = models_cv |>
   forecast(h = 1) 
